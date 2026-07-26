@@ -1,0 +1,6 @@
+# One RSS/Atom feed URL per line. Lines starting with # are ignored.
+# Replace/extend with the sites you actually want to track.
+
+https://feeds.feedburner.com/TheHackersNews
+https://www.bleepingcomputer.com/feed/
+https://krebsonsecurity.com/feed/
