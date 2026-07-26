@@ -51,7 +51,7 @@ crontab -e
 # same line as above, using Termux's python path
 ```
 
-**PC (systemd timer)** — create `daily-news.service` + `daily-news.timer`
+**PC (systemd timer)** — create `hermes-lite.service` + `hermes-lite.timer`
 in `~/.config/systemd/user/` if you'd rather not use cron; ask me if you
 want those two unit files written out.
 
@@ -60,13 +60,38 @@ want those two unit files written out.
 `seen.json` stores article URLs already sent. It's capped at 2000 entries
 (oldest trimmed first) so it never grows unbounded. Delete it to reset.
 
-## 5. Known MVP limitations (by design, for v1)
+## 5. Criticality filtering (two-stage, to save tokens)
+
+Runs in two passes instead of one:
+
+1. **Triage** — sends just the headlines (no article content) and asks for
+   a criticality score 1-10 per headline. Cheap: tiny input, and the
+   output is just a list of numbers, not summaries.
+2. **Summarize** — only articles that clear `CRITICALITY_THRESHOLD`
+   (default 5) get a second call, this time with full title + content, to
+   generate the actual summary that gets sent.
+
+Articles that don't clear the bar in stage 1 never get a summary
+generated at all — no wasted output tokens on content you're going to
+discard anyway. Articles that do clear it get sent to Telegram **most
+critical first**, sorted by score before sending, so if you're watching
+your phone in real time the highest-priority items land first.
+
+Both stages are batched (`EVAL_BATCH_SIZE`, default 15) — one call
+handles up to that many articles at once, same reasoning as before.
+
+## 6. Known MVP limitations (by design, for v1)
 
 - Uses the feed's own summary/description field, not the full article body
   — good enough for a decent summary, avoids scraping fragile page HTML.
-- No retry/backoff on LLM or Telegram failures — a failed article is just
-  skipped and logged; it'll be retried next run since it's not marked seen.
-- `MAX_NEW_ARTICLES_PER_RUN` caps how many get sent per run, so a large
-  batch of new articles won't blow through your free-tier rate limit or
-  flood your chat all at once.
+- No retry/backoff on Telegram failures — a failed send is just logged
+  and retried next run since it's not marked seen. LLM evaluation
+  failures also aren't marked seen, for the same reason.
+- `MAX_NEW_ARTICLES_PER_RUN` caps how many get *evaluated* per run (not
+  how many get sent — that depends on how many clear the score
+  threshold), so a large backlog won't blow through your free-tier rate
+  limit all at once.
+- Feeds are still processed in file order — if one feed has a big
+  backlog, it can dominate a run before later feeds get reached (this
+  hasn't been changed yet — say the word if you want round-robin instead).
 - ESP32 family is intentionally out of scope for this version.

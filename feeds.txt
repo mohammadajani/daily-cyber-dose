@@ -1,6 +1,68 @@
-# One RSS/Atom feed URL per line. Lines starting with # are ignored.
-# Replace/extend with the sites you actually want to track.
+# Hermes Lite — feeds.txt
+# Verified against a live feed-health tracker (threatfilter.dev/sources) —
+# not guessed. A few known-dead feeds are listed at the bottom as comments
+# so you know they were considered and excluded, not forgotten.
 
+# --- News & research -------------------------------------------------------
 https://feeds.feedburner.com/TheHackersNews
 https://www.bleepingcomputer.com/feed/
 https://krebsonsecurity.com/feed/
+https://www.darkreading.com/rss.xml
+https://therecord.media/feed/
+https://www.securityweek.com/feed/
+https://www.schneier.com/feed/atom/
+https://securelist.com/feed/
+https://news.sophos.com/en-us/category/threat-research/feed/
+https://www.welivesecurity.com/en/rss/feed/
+https://blog.talosintelligence.com/rss/
+https://www.malwarebytes.com/blog/feed/index.xml
+https://security.googleblog.com/feeds/posts/default
+https://www.group-ib.com/blog/rss.xml
+https://www.greynoise.io/blog/rss.xml
+https://feeds.feedburner.com/TrendMicroSimplySecurity
+https://isc.sans.edu/rssfeed_full.xml
+
+# --- Threat intelligence (as you asked for specifically) -------------------
+https://unit42.paloaltonetworks.com/feed/
+https://cloudblog.withgoogle.com/topics/threat-intelligence/rss/
+https://research.checkpoint.com/feed/
+https://www.crowdstrike.com/blog/feed/
+https://www.sentinelone.com/labs/feed/
+https://www.huntress.com/blog/rss.xml
+
+# --- Government / CERT advisories (CISA, as requested) ----------------------
+https://www.cisa.gov/news.xml
+https://www.cisa.gov/blog.xml
+https://us-cert.cisa.gov/ncas/current-activity.xml
+https://www.cisa.gov/cybersecurity-advisories/all.xml
+https://www.ncsc.gov.uk/api/1/services/v1/news-rss-feed.xml
+https://cert.europa.eu/publications/security-advisories-rss
+https://www.jpcert.or.jp/english/rss/jpcert-en.rdf
+
+# --- Vulnerability research --------------------------------------------------
+https://googleprojectzero.blogspot.com/feeds/posts/default
+https://www.rapid7.com/blog/rss/
+https://www.zerodayinitiative.com/rss/published/
+https://www.tenable.com/blog/feed
+https://blog.qualys.com/feed
+
+# --- Vendor advisories / PSIRTs ---------------------------------------------
+https://www.microsoft.com/en-us/security/blog/feed/
+https://api.msrc.microsoft.com/update-guide/rss
+https://sec.cloudapps.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml
+https://www.fortiguard.com/rss/ir.xml
+https://security.paloaltonetworks.com/rss.xml
+https://developer.apple.com/news/releases/rss/releases.rss
+https://about.gitlab.com/security-releases.xml
+
+# --- Newsletters / daily tidbits (tl;dr sec, as requested) -------------------
+https://tldrsec.com/feed.xml
+https://danielmiessler.com/feed/
+
+# --- Known dead ends, deliberately excluded (checked, not missed) -----------
+# ACSC Australia    — blocks datacenter/cloud egress, no public alternative
+# F5 Security        — support.f5.com retired, replacement needs Salesforce auth
+# Juniper SIRT        — RSS + S3 fallback both retired, no public feed
+# VMware Advisories  — Broadcom acquisition removed all RSS endpoints
+# ENISA News          — removed RSS in 2025 site redesign, no working endpoint
+# Trellix Advisories — origin timeout (CF 522), no replacement published
