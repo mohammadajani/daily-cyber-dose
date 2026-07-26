@@ -51,7 +51,7 @@ crontab -e
 # same line as above, using Termux's python path
 ```
 
-**PC (systemd timer)** — create `hermes-lite.service` + `hermes-lite.timer`
+**PC (systemd timer)** — create `daily-news.service` + `daily-news.timer`
 in `~/.config/systemd/user/` if you'd rather not use cron; ask me if you
 want those two unit files written out.
 
