@@ -6,8 +6,10 @@ Runs once per invocation. Trigger it with cron / systemd timer / Termux job sche
 Works unmodified on: PC, Linux, Termux (Android), Raspberry Pi Zero W / 2W.
 """
 
+import calendar
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -27,7 +29,18 @@ FEEDS_FILE = BASE_DIR / "feeds.txt"
 SEEN_FILE = BASE_DIR / "seen.json"
 
 MAX_NEW_ARTICLES_PER_RUN = int(os.getenv("MAX_NEW_ARTICLES_PER_RUN", "15"))
-SEEN_HISTORY_CAP = 2000  # how many URLs to remember before trimming the oldest
+
+# How many URLs to remember before trimming the oldest. Bumped up from the
+# original 2000 default — a feed list this size (44 feeds, several of them
+# high-volume CVE streams like MSRC) blows past 2000 unique URLs quickly,
+# which was triggering the trimming bug fixed below far sooner than intended.
+SEEN_HISTORY_CAP = int(os.getenv("SEEN_HISTORY_CAP", "8000"))
+
+# Articles older than this are skipped entirely — never triaged, never
+# summarized — and marked seen so they're not re-scanned every run. This is
+# what keeps a feed that returns its whole historical archive (some CERT/
+# advisory feeds do this) from flooding a run with years-old items.
+MAX_ARTICLE_AGE_HOURS = int(os.getenv("MAX_ARTICLE_AGE_HOURS", "72"))
 
 # How many articles go into ONE LLM call. Batching means clearing a big
 # backlog costs far fewer requests than one-call-per-article — e.g. 15
@@ -57,18 +70,48 @@ REQUEST_TIMEOUT = 20  # seconds, for every outbound HTTP call
 # Seen-articles store (simple JSON file — swap for SQLite later if needed)
 # ---------------------------------------------------------------------------
 
-def load_seen() -> set:
+# ---------------------------------------------------------------------------
+# Seen-articles store (swap for SQLite later if needed)
+#
+# IMPORTANT: this used to be a plain Python `set`, trimmed with
+# `list(seen)[-CAP:]`. That looks like "keep the most recent CAP entries" but
+# isn't — set iteration order in Python has NO relationship to insertion
+# order, so that trim was dropping an effectively random selection of URLs
+# once the set exceeded SEEN_HISTORY_CAP. A dropped URL that was still
+# within MAX_ARTICLE_AGE_HOURS would then look "new" again on a later run —
+# which is exactly what re-sent an already-sent article. This class tracks
+# real insertion order (a list) alongside a set for O(1) membership checks,
+# so trimming now genuinely drops the oldest entries first.
+# ---------------------------------------------------------------------------
+
+class SeenStore:
+    def __init__(self, initial_order: list):
+        self._order = list(initial_order)   # oldest-first; source of truth
+        self._set = set(self._order)         # fast membership checks only
+
+    def __contains__(self, link: str) -> bool:
+        return link in self._set
+
+    def add(self, link: str) -> None:
+        if link not in self._set:
+            self._set.add(link)
+            self._order.append(link)  # newest entries always land at the end
+
+    def trimmed_for_save(self, cap: int) -> list:
+        return self._order[-cap:] if len(self._order) > cap else self._order
+
+
+def load_seen() -> SeenStore:
     if not SEEN_FILE.exists():
-        return set()
+        return SeenStore([])
     try:
-        return set(json.loads(SEEN_FILE.read_text()))
+        return SeenStore(json.loads(SEEN_FILE.read_text()))
     except (json.JSONDecodeError, OSError):
-        return set()
+        return SeenStore([])
 
 
-def save_seen(seen: set) -> None:
-    trimmed = list(seen)[-SEEN_HISTORY_CAP:]
-    SEEN_FILE.write_text(json.dumps(trimmed))
+def save_seen(seen: SeenStore) -> None:
+    SEEN_FILE.write_text(json.dumps(seen.trimmed_for_save(SEEN_HISTORY_CAP)))
 
 
 # ---------------------------------------------------------------------------
@@ -76,17 +119,54 @@ def save_seen(seen: set) -> None:
 # ---------------------------------------------------------------------------
 
 def load_feed_urls() -> list:
+    """Returns a list of (url, category) tuples. Category comes from the
+    most recent '# --- Section Name ---' header above each URL in feeds.txt,
+    so feeds.txt doubles as both the feed list AND the category config —
+    no second file to keep in sync."""
     if not FEEDS_FILE.exists():
         print(f"[!] {FEEDS_FILE} not found. Create it with one RSS URL per line.")
         sys.exit(1)
+
     lines = FEEDS_FILE.read_text().splitlines()
-    return [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
+    feeds = []
+    current_category = "general"
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("# ---"):
+            # e.g. "# --- Threat intelligence (as you asked for specifically) ---"
+            label = line.strip("# -").strip()
+            label = label.split("(")[0].strip()  # drop parenthetical asides
+            if label:
+                current_category = label
+            continue
+        if line.startswith("#"):
+            continue  # a plain comment, e.g. the excluded-feeds notes at the bottom
+        feeds.append((line, current_category))
+
+    return feeds
 
 
-def fetch_new_entries(feed_urls: list, seen: set) -> list:
-    """Return a flat list of dicts: {title, link, summary_source, published}."""
+def _entry_age_hours(entry) -> float:
+    """Returns age in hours, or None if the feed doesn't provide a date."""
+    struct = entry.get("published_parsed") or entry.get("updated_parsed")
+    if not struct:
+        return None
+    published_epoch = calendar.timegm(struct)
+    return (time.time() - published_epoch) / 3600.0
+
+
+def fetch_new_entries(feed_urls: list, seen: SeenStore) -> list:
+    """feed_urls is a list of (url, category) tuples.
+    Returns a flat list of dicts: {title, link, raw_summary, published, category}.
+    Entries older than MAX_ARTICLE_AGE_HOURS are marked seen and skipped here,
+    before they ever reach triage."""
     new_entries = []
-    for url in feed_urls:
+    skipped_stale = 0
+
+    for url, category in feed_urls:
         try:
             parsed = feedparser.parse(url)
         except Exception as e:
@@ -97,6 +177,13 @@ def fetch_new_entries(feed_urls: list, seen: set) -> list:
             link = entry.get("link", "")
             if not link or link in seen:
                 continue
+
+            age_hours = _entry_age_hours(entry)
+            if age_hours is not None and age_hours > MAX_ARTICLE_AGE_HOURS:
+                seen.add(link)  # never re-check a stale item again
+                skipped_stale += 1
+                continue
+
             new_entries.append({
                 "title": entry.get("title", "Untitled"),
                 "link": link,
@@ -104,7 +191,13 @@ def fetch_new_entries(feed_urls: list, seen: set) -> list:
                 # context for an LLM summary without fetching the full page
                 "raw_summary": entry.get("summary", "") or entry.get("description", ""),
                 "published": entry.get("published", ""),
+                "published_epoch": calendar.timegm(entry["published_parsed"]) if entry.get("published_parsed") else 0,
+                "category": category,
             })
+
+    if skipped_stale:
+        print(f"[i] Skipped {skipped_stale} item(s) older than {MAX_ARTICLE_AGE_HOURS}h (marked seen, won't recheck).")
+
     return new_entries
 
 
@@ -114,33 +207,64 @@ def fetch_new_entries(feed_urls: list, seen: set) -> list:
 # ---------------------------------------------------------------------------
 
 TRIAGE_PROMPT_HEADER = (
-    "You are triaging cybersecurity news headlines for a security researcher, "
-    "by how critical/actionable each one is. Below are {n} headlines, "
-    "numbered. Respond with ONLY a JSON array of {n} integers (1-10), no "
-    "objects, no markdown fences, no extra text — just the raw array, e.g. "
-    "[7, 2, 9], in the SAME ORDER as the headlines.\n"
-    "10 = actively-exploited vulnerability or major breach affecting "
-    "widely-used systems, requiring immediate attention.\n"
-    "5 = notable but not urgent.\n"
-    "1 = minor/opinion/non-actionable news.\n\n"
+    "You are triaging cybersecurity items for a security researcher, by how "
+    "critical/actionable each one is. Below are {n} items, numbered, each "
+    "tagged with its source category in brackets. Respond with ONLY a JSON "
+    "array of {n} integers (1-10), no objects, no markdown fences, no extra "
+    "text — just the raw array, e.g. [7, 2, 9], in the SAME ORDER as the "
+    "items.\n\n"
+    "Score with the category in mind, since 'critical' means different "
+    "things for different sources:\n"
+    "- [CERT advisory] / [Vendor advisories]: score by the severity of the "
+    "vulnerability disclosed (actively exploited or widely-deployed = high).\n"
+    "- [Threat intelligence] / [Vulnerability research] / [News & research]: "
+    "score by real-world impact and how actionable it is right now.\n"
+    "- [Newsletters]: these are curated roundups, not urgent by nature — "
+    "score by how significant the notable items *within* the roundup are, "
+    "not the newsletter format itself.\n\n"
+    "General scale: 10 = actively-exploited vulnerability or major breach "
+    "affecting widely-used systems, requiring immediate attention. "
+    "5 = notable but not urgent. 1 = minor/opinion/non-actionable.\n\n"
 )
 
 
 def build_triage_prompt(articles: list) -> str:
     parts = [TRIAGE_PROMPT_HEADER.format(n=len(articles))]
     for i, art in enumerate(articles, 1):
-        parts.append(f"{i}. {art['title']}")
+        parts.append(f"{i}. [{art['category']}] {art['title']}")
     return "\n".join(parts)
 
 
-def _parse_int_array(raw_text: str, expected_count: int) -> list:
-    text = raw_text.strip()
+def _sanitize_json_escapes(text: str) -> str:
+    """LLMs frequently emit raw backslashes in generated text (Windows paths,
+    regex fragments, etc.) without escaping them for JSON — \\W, \\S, \\d are
+    not valid JSON escapes and make json.loads reject the whole response.
+    This doubles any backslash that isn't already part of a valid escape
+    sequence, so 'C:\\Windows' becomes 'C:\\\\Windows' and parses cleanly."""
+    return re.sub(r'\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})', r'\\\\', text)
+
+
+def _strip_fences(text: str) -> str:
+    text = text.strip()
     if text.startswith("```"):
         text = text.strip("`")
         if text.lower().startswith("json"):
             text = text[4:]
         text = text.strip()
-    data = json.loads(text)
+    return text
+
+
+def _load_json_array(text: str):
+    """Try a normal parse first; only pay the sanitization cost if that fails."""
+    text = _strip_fences(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return json.loads(_sanitize_json_escapes(text))
+
+
+def _parse_int_array(raw_text: str, expected_count: int) -> list:
+    data = _load_json_array(raw_text)
     if not isinstance(data, list):
         raise ValueError("Expected a JSON array of integers from the LLM")
     scores = [int(x) for x in data]
@@ -213,13 +337,7 @@ def build_summarize_prompt(articles: list) -> str:
 
 
 def _parse_str_array(raw_text: str, expected_count: int) -> list:
-    text = raw_text.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:]
-        text = text.strip()
-    data = json.loads(text)
+    data = _load_json_array(raw_text)
     if not isinstance(data, list):
         raise ValueError("Expected a JSON array of strings from the LLM")
     summaries = [str(x).strip() for x in data]
@@ -329,7 +447,8 @@ def main():
     seen = load_seen()
 
     new_entries = fetch_new_entries(feed_urls, seen)
-    print(f"[i] Found {len(new_entries)} new article(s) across {len(feed_urls)} feed(s).")
+    print(f"[i] Found {len(new_entries)} new article(s) across {len(feed_urls)} feed(s) "
+          f"(within the last {MAX_ARTICLE_AGE_HOURS}h).")
 
     if not new_entries:
         return
@@ -367,8 +486,9 @@ def main():
             else:
                 to_summarize.append((entry, score))
 
-    # sort so the most critical articles get sent to Telegram first
-    to_summarize.sort(key=lambda pair: pair[1], reverse=True)
+    # sort so the most critical articles get sent first; among equal scores,
+    # the more recent article wins (a 1-hour-old 8/10 beats a 48-hour-old 8/10)
+    to_summarize.sort(key=lambda pair: (pair[1], pair[0]["published_epoch"]), reverse=True)
 
     # --- Stage 2: summarize only the articles that cleared the bar ---
     for batch in chunked(to_summarize, EVAL_BATCH_SIZE):
