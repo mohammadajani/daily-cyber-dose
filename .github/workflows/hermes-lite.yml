@@ -1,0 +1,58 @@
+name: Hermes Lite — cyber dose
+
+on:
+  schedule:
+    # GitHub Actions cron is always UTC. These correspond to:
+    #   10:20 IST -> 04:50 UTC
+    #   20:15 IST -> 14:45 UTC
+    - cron: '50 4 * * *'
+    - cron: '45 14 * * *'
+  workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
+
+# Scheduled runs firing close together (or a manual run overlapping a
+# scheduled one) would otherwise race on the hermes.db commit below — this
+# makes the second wait for the first instead, the CI equivalent of the
+# local .hermes.lock file (which doesn't help here since every run gets a
+# brand-new, disposable VM).
+concurrency:
+  group: hermes-lite-run
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # needed to commit the updated hermes.db back to the repo
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Hermes Lite
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LLM_PROVIDERS: groq,gemini
+        run: python3 news_bot.py
+
+      # Runners are thrown away after every job — without this, hermes.db
+      # resets to empty every run and old articles would look "new" again
+      # and get re-sent. Committing it back is the simplest way to persist
+      # state without standing up any external storage.
+      - name: Persist seen/sent state
+        run: |
+          git config user.name "hermes-lite-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add hermes.db
+          git diff --cached --quiet || git commit -m "chore: update hermes-lite state [skip actions]"
+          git push

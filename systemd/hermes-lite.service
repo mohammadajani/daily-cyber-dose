@@ -1,0 +1,13 @@
+[Unit]
+Description=Hermes Lite — RSS to Telegram cybersecurity digest (one-shot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Adjust these two paths to match where you cloned the project and your venv.
+WorkingDirectory=%h/popo/daily-cyber-dose
+ExecStart=%h/popo/daily-cyber-dose/venv/bin/python3 %h/popo/daily-cyber-dose/news_bot.py
+# The script has its own file lock (.hermes.lock) against overlapping runs,
+# but this also stops systemd from starting a second instance while the
+# first is still finishing.

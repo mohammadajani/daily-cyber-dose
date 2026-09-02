@@ -1,0 +1,9 @@
+[Unit]
+Description=Hermes Lite — weekly digest post (one-shot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/popo/daily-cyber-dose
+ExecStart=%h/popo/daily-cyber-dose/venv/bin/python3 %h/popo/daily-cyber-dose/news_bot.py --weekly-digest

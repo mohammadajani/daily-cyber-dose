@@ -1,0 +1,15 @@
+venv/
+.env
+__pycache__/
+*.pyc
+
+# Local-only runtime state — regenerated on first run.
+# hermes.db is intentionally NOT ignored: if you're running this via the
+# GitHub Actions workflow (.github/workflows/hermes-lite.yml), that workflow
+# commits it back to the repo after every run so state survives between
+# disposable runner VMs. Running only locally/cron/systemd? You can ignore
+# it again — add "hermes.db" back to this file.
+seen.json
+run_events.jsonl
+.hermes.lock
+news_bot.log
