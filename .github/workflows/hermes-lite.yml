@@ -49,10 +49,41 @@ jobs:
       # resets to empty every run and old articles would look "new" again
       # and get re-sent. Committing it back is the simplest way to persist
       # state without standing up any external storage.
+      #
+      # The plain "git push" here can get rejected if anything else lands
+      # on main between this job's checkout and this step — a direct edit
+      # via the GitHub web UI, another collaborator's commit, etc. (the
+      # concurrency group above only serializes runs of THIS workflow, not
+      # unrelated pushes to the repo). That's a normal, recoverable race,
+      # not a real failure — so on rejection, sync to whatever main now is
+      # and re-apply THIS run's hermes.db on top, rather than trying to
+      # merge/rebase (which has its own footguns with a binary file and
+      # isn't needed here — the file's *content* is what matters, not a
+      # meaningful commit history for it).
       - name: Persist seen/sent state
         run: |
           git config user.name "hermes-lite-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add hermes.db
-          git diff --cached --quiet || git commit -m "chore: update hermes-lite state [skip actions]"
-          git push
+
+          cp hermes.db /tmp/hermes.db.thisrun
+
+          for attempt in 1 2 3 4 5; do
+            git add hermes.db
+            if git diff --cached --quiet; then
+              echo "No state changes to persist."
+              exit 0
+            fi
+            git commit -q -m "chore: update hermes-lite state [skip actions]"
+            if git push; then
+              echo "Pushed state successfully (attempt $attempt)."
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt/5) — main moved since checkout. Syncing and retrying..."
+            git fetch origin main -q
+            git reset --hard origin/main -q
+            cp /tmp/hermes.db.thisrun hermes.db
+            sleep $((attempt * 2))
+          done
+
+          echo "::error::Could not push hermes-lite state after 5 attempts — check for a stuck workflow run."
+          exit 1
