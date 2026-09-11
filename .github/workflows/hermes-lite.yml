@@ -1,12 +1,12 @@
 name: Hermes Lite — cyber dose
 
 on:
-  schedule:
+  #  schedule:
     # GitHub Actions cron is always UTC. These correspond to:
     #   10:20 IST -> 04:50 UTC
     #   20:15 IST -> 14:45 UTC
-    - cron: '50 4 * * *'
-    - cron: '45 14 * * *'
+    #  - cron: '50 4 * * *'
+    #  - cron: '45 14 * * *'
   workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
 
 # Scheduled runs firing close together (or a manual run overlapping a
